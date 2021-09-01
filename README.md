@@ -20,7 +20,7 @@ sudo apt-get install python3-tflite-runtime</code>
 
 <code>pip3 install opencv-python
 pip3 install numpy==1.21.2
-pip3 insall tensorflow-object-detection-api</code>
+pip3 install tensorflow-object-detection-api</code>
 
 ### Now some extra library requirements
 
