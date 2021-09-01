@@ -3,56 +3,37 @@ import queue
 import threading
 import datetime
 import re
+from pygame import mixer
 
-from gpiozero import Button
 from gpiozero import LED
 
 import numpy as np
 import cv2
-from tflite_runtime.interpreter import Interpreter
 from object_detection.utils import visualization_utils as vis_util
-
+from tflite_runtime.interpreter import Interpreter
 
 class LiveView(threading.Thread):
 
     def __init__(self, queue_request_image, queue_live_out, stream):
         self.crashed = False
-        self._stopper = threading.Event()
         threading.Thread.__init__(self)
 
-        self.timer = time.time()
         self.queue_live_out = queue_live_out
         self.queue_request_image = queue_request_image
         self.stream = stream
         self.connect_to_camera(stream)
-        
         self.retry_counter = 0
-        global c
     
     def connect_to_camera(self, stream):
         try: self.cap = cv2.VideoCapture(stream)
         except: print('Can not open camera stream...')
 
-    # function using _stop function
-    def stop(self):
-        self._stopper.set()
-
-    def stopped(self):
-        return self._stopper.isSet()
-
     def run(self):
         while True:
-            self.timer = time.time()
-
-            if self.stopped():
-                return
             try:
                 status = 'frame'
                 if not self.cap.isOpened():
                     raise IOError('Cannot open camera')
-                    ret = 'Cannot open camera', False, False
-                    self.queue_live_out.put(ret)
-                    break
                 else:
                     work, frame_cap = self.cap.read()
                     try:
@@ -63,9 +44,6 @@ class LiveView(threading.Thread):
                             self.queue_live_out.put(ret)
                         else:
                             raise IOError('Image unable to be captured')
-                            ret = 'Image unable to be captured', False, False
-                            self.queue_out.put(ret)
-                            break
                     except queue.Empty:
                         pass
                     except Exception as e:
@@ -80,29 +58,19 @@ class LiveView(threading.Thread):
                 self.cap.release
                 time.sleep(15)
                 self.connect_to_camera(self.stream)
-            
             if self.retry_counter >= 1000000:
                 print('Retry limit reached, giving up!')
                 self.crashed = True
                 break
         self.cap.release
         return
-
-
+    
 class Inference(threading.Thread):
     def __init__(self, queue_request_image, queue_live_out, queue_out):
-        self._stopper = threading.Event()
         threading.Thread.__init__(self)
         self.queue_request_image = queue_request_image
         self.queue_live_out = queue_live_out
         self.queue_out = queue_out
-
-    # function using _stop function
-    def stop(self):
-        self._stopper.set()
-
-    def stopped(self):
-        return self._stopper.isSet()
 
     def load_labels(self, path):
         """Loads the labels file. Supports files with or without index numbers."""
@@ -153,8 +121,10 @@ class Inference(threading.Thread):
         return results
 
     def run(self):
+        # Points to model and label files
         labels = 'model_litev1/labelmap.txt'
         model = 'model_litev1/detect.tflite'
+        # Anything below this threshold won't show
         threshold = 0.4
         labels = self.load_labels(labels)
         label_map = {}
@@ -167,17 +137,19 @@ class Inference(threading.Thread):
         self.queue_request_image.put(True)
         timer = time.time()
         while True:
-            if self.stopped():
-                break
             try:
                 status, image_np = self.queue_live_out.get(0)
+                # Change this to false to stop it drawing the box
+                # This allows you to run console only output and doesn't need desktop gui
                 draw_boxes = True
                 if status == 'frame':
-                    # Crop Image
+                    # Crop Image, optional if you want to cut out parts of your image
                     #image_np = image_np[80:480, 0:350]
+                    # Shrink image to 300x300 for the model we're using
                     image_np_small = cv2.resize(image_np, (300, 300))
+                    # Runs the inference on the image and returns the results
                     results = self.detect_objects(interpreter, image_np_small, threshold)
-
+                    # init arrays to zeros, convert results to be more easily usable
                     boxes = np.array([[0.0,0.0,0.0,0.0]])
                     classes = np.array([0])
                     scores = np.array([0.0])
@@ -190,15 +162,15 @@ class Inference(threading.Thread):
                         scores = np.concatenate((scores, a))
                         
                     results = 0
-                    
                     for score, d_class in zip(scores, classes):
-                        if d_class <= 4:
+                        # <3 on the labelmap.txt means the first 4 (0, 1, 2, 3)
+                        # being person, bicycle, car and motocycle are counted
+                        if d_class <= 3:
                             if score > 0.5:
                                 results += 1
                     if draw_boxes:
-                        #output_resolution = (800, 480)
-                        #image_np = cv2.resize(image_np, output_resolution)
-                            
+                        # Set window size (useful for high res cameras)
+                        #image_np = cv2.resize(image_np, (800, 480))
                         vis_util.visualize_boxes_and_labels_on_image_array(
                             image_np,
                             boxes,
@@ -210,30 +182,25 @@ class Inference(threading.Thread):
                             use_normalized_coordinates=True,
                             line_thickness=2,
                             max_boxes_to_draw=None)
-                        inference_time = (time.time() - timer)
-                        ret = True, image_np, results, inference_time
                         cv2.imshow('Frame', image_np)
-                        # Press Q on keyboard to  exit
                         if cv2.waitKey(25) & 0xFF == ord('q'):
                             break
-                    else:
-                        inference_time = (time.time() - timer)
-                        ret = True, image_np, results, inference_time
+                    inference_time = (time.time() - timer)
+                    ret = True, image_np, results, inference_time
                     self.queue_out.put(ret)
                     if self.queue_live_out.qsize() == 0:
                         self.queue_request_image.put(True)
 
-                    print('Inference FPS: ', round(1 / inference_time, 2))
+                    #print('Inference FPS: ', round(1 / inference_time, 2))
                     timer = time.time()
             except queue.Empty:
                 #pass
                 time.sleep(0.1)
-
-
+                
 class MainApplication:
 
     def __init__(self):
-        # Relay for alarm
+        # Relay for alarm, change number to set GPIO pin
         self.relay = LED(23)
         self.relay.off()
         
@@ -243,14 +210,19 @@ class MainApplication:
         self.queue_live_inference_out = queue.Queue(maxsize=0)
         self.queue_request_image = queue.Queue(maxsize=0)
         
+        # Setup and start live camera capture thread
+        # note below, this is for hikvision cameras I am using
+        # you may need to hunt down RTSP address for your own cameras
+        # on mine 101 is main stream and 102 is substream (low resolution)
         self.live_thread = LiveView(
             self.queue_request_image,
             self.queue_live_out,
-            'rtsp://user:passwd@address:554/Streaming/Channels/102/')
+            'rtsp://admin:helpme03@192.168.50.206:554/Streaming/Channels/102/')
         
         self.live_thread.setDaemon(True)
         self.live_thread.start()
         
+        # Setup and start inference thread
         self.live_inference = Inference(self.queue_request_image, self.queue_live_out, self.queue_live_inference_out)
         self.live_inference.setDaemon(True)
         self.live_inference.start()
@@ -264,15 +236,22 @@ class MainApplication:
     
     def trigger_alarm(self):
         self.relay.on()
+        mixer.init()
+        mixer.music.load("alarm.wav")
+        mixer.music.play()
+        # How long the alarm goes off for. 3 seconds here.
         time.sleep(3)
         self.relay.off()
+        #mixer.music.stop()
 
     def run(self):
-        prev_results = [10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+        # Final number is how many previous results to store to average.
+        # 10 means last 8 results are stored and 4/8 images will have to contain an object to trigger the alarm
+        # this helps prevent false alarms and can be tuned to your liking
+        prev_results = [10] * 8
         prev_average = 10
         prev_single_result = 10
         timer = time.time()
-        
         while True:
             if self.live_thread.crashed:
                 break
@@ -284,13 +263,12 @@ class MainApplication:
                     prev_single_result = results
                     if averaged_results > prev_average:
                         print('ALARM!!!', elapsed_time, ' TIME: ', datetime.datetime.now())
+                        cv2.imshow('ALARM IMAGE', image_np)
+                        if cv2.waitKey(25) & 0xFF == ord('q'):
+                            break
                         self.trigger_alarm()
                         timer = time.time()
-                        
-                        # Show Alarm Image
-                        #cv2.imshow('ALARM IMAGE', image_np)
-                        #if cv2.waitKey(25) & 0xFF == ord('q'):
-                        #    break
+                        # Show alarm image when object sets off alarm, disable for console only
                 prev_results.pop()
                 prev_results.insert(0, results)
                 prev_average = averaged_results
@@ -300,11 +278,7 @@ class MainApplication:
             except Exception as e:
                 print('catch main: ', e)
                 break
-            time.sleep(0.01)
+            time.sleep(0.1)
 
 c = MainApplication()  # keeps the application open
 c.run()
-
-print('Goodbye')
-
-
