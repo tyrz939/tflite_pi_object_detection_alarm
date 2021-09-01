@@ -4,6 +4,7 @@
 For my [blog post here](https://johnkeen.tech/raspberry-pi-for-security-camera-object-detection/)
 
 Pin 23 on the pi is used for either lighting up an LED or switching a Relay to activate an alarm.
+Audio is played, make sure you're using the 3.5mm jack if you plug in a speaker as default is HDMI audio on Raspbian.
 
 ## Installing Requirements
 
